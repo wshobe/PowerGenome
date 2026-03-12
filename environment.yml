@@ -22,7 +22,7 @@ dependencies:
   - conda-forge::hypothesis[pandas]
   - numpy
   - openpyxl>=3.0
-  - duckdb
+  - duckdb==1.4.4
 
   # GIS dependencies from conda-forge
   - conda-forge::fiona
