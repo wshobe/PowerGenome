@@ -2153,8 +2153,13 @@ def gentype_region_capacity_factor(
 
     cap_col = settings["capacity_col"]
 
-    # Include standby (SB) generators since they are in our capacity totals
-    sql = f"""
+# Include standby (SB) generators since they are in our capacity totals
+    # PATCH: migrated from SQLite to DuckDB/S3 parquet
+    import duckdb as _duckdb
+    pudl_base = "s3://pudl.catalyst.coop/stable"
+    _con = _duckdb.connect()
+    years_list = ", ".join([f"'{y}'" for y in data_years])
+    duck_sql = f"""
         SELECT
             G.report_date,
             G.plant_id_eia,
@@ -2164,10 +2169,9 @@ def gentype_region_capacity_factor(
             SUM(G.winter_capacity_mw) as winter_capacity_mw,
             G.technology_description,
             G.fuel_type_code_pudl
-        FROM
-            generators_eia860 G
+        FROM read_parquet('{pudl_base}/out_eia__yearly_generators.parquet') G
         WHERE operational_status_code NOT IN ('RE', 'OS', 'IP', 'CN')
-        AND strftime('%Y',report_date) in ({','.join(['?']*len(data_years))})
+        AND strftime(report_date::DATE, '%Y') in ({years_list})
         GROUP BY
             G.report_date,
             G.plant_id_eia,
@@ -2176,13 +2180,8 @@ def gentype_region_capacity_factor(
             G.generator_id
         ORDER by G.plant_id_eia, G.report_date
     """
-
-    plant_gen_tech_cap = pd.read_sql_query(
-        sql,
-        pudl_engine,
-        params=[str(y) for y in data_years],
-        parse_dates=["report_date"],
-    )
+    plant_gen_tech_cap = _con.execute(duck_sql).df()
+    plant_gen_tech_cap["report_date"] = pd.to_datetime(plant_gen_tech_cap["report_date"])
     plant_gen_tech_cap = plant_gen_tech_cap.loc[
         plant_gen_tech_cap["plant_id_eia"].isin(plant_region_map["plant_id_eia"]), :
     ]
@@ -2200,22 +2199,21 @@ def gentype_region_capacity_factor(
 
     label_small_hydro(plant_tech_cap, settings, by=["plant_id_eia", "report_date"])
 
-    sql = """
+    duck_sql2 = f"""
         SELECT
-            strftime('%Y', GF.report_date) AS report_date,
+            strftime(GF.report_date::DATE, '%Y') AS report_date,
             GF.plant_id_eia,
             SUM(GF.net_generation_mwh) AS net_generation_mwh,
             GF.fuel_type_code_pudl
-        FROM
-            generation_fuel_eia923 GF
+        FROM read_parquet('{pudl_base}/core_eia923__monthly_generation_fuel.parquet') GF
         GROUP BY
-            strftime('%Y', GF.report_date),
+            strftime(GF.report_date::DATE, '%Y'),
             GF.plant_id_eia,
             GF.fuel_type_code_pudl
-        ORDER by GF.plant_id_eia, strftime('%Y', GF.report_date)
+        ORDER by GF.plant_id_eia, strftime(GF.report_date::DATE, '%Y')
     """
-    generation = pd.read_sql_query(sql, pudl_engine, parse_dates={"report_date": "%Y"})
-
+    generation = _con.execute(duck_sql2).df()
+    generation["report_date"] = pd.to_datetime(generation["report_date"], format="%Y")
     if pudl.__version__ > "0.5.0":
         by = ["plant_id_eia"]
     else:
